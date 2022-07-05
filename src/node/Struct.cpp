@@ -5,30 +5,33 @@
 #include "Bitfield.hpp"
 #include "Pointer.hpp"
 #include "Undefined.hpp"
+#include "UndefinedBitfield.hpp"
 
 #include "Struct.hpp"
 
 namespace node {
-Struct::Struct(Process& process, genny::Variable* var, Property& props)
-    : Variable{process, var, props}, m_struct{dynamic_cast<genny::Struct*>(var->type())} {
+Struct::Struct(Config& cfg, Process& process, genny::Variable* var, Property& props)
+    : Variable{cfg, process, var, props}, m_struct{dynamic_cast<genny::Struct*>(var->type())} {
     assert(m_struct != nullptr);
 
     m_props["__collapsed"].set_default(true);
+
+    std::set<uintptr_t> bitfield_offsets{};
 
     // Build the node map.
     auto make_node = [&](genny::Variable* var) -> std::unique_ptr<Base> {
         auto&& props = m_props[var->name()];
 
         if (var->type()->is_a<genny::Array>()) {
-            return std::make_unique<Array>(m_process, var, props);
+            return std::make_unique<Array>(m_cfg, m_process, var, props);
         } else if (var->type()->is_a<genny::Struct>()) {
-            return std::make_unique<Struct>(m_process, var, props);
+            return std::make_unique<Struct>(m_cfg, m_process, var, props);
         } else if (var->type()->is_a<genny::Pointer>()) {
-            return std::make_unique<Pointer>(m_process, var, props);
+            return std::make_unique<Pointer>(m_cfg, m_process, var, props);
         } else if (var->is_bitfield()) {
-            return std::make_unique<Bitfield>(m_process, var, props);
+            return std::make_unique<Bitfield>(m_cfg, m_process, var, props);
         } else {
-            return std::make_unique<Variable>(m_process, var, props);
+            return std::make_unique<Variable>(m_cfg, m_process, var, props);
         }
     };
     std::function<void(uintptr_t, genny::Struct*)> add_vars = [&](uintptr_t offset, genny::Struct* s) {
@@ -40,11 +43,43 @@ Struct::Struct(Process& process, genny::Variable* var, Property& props)
         }
 
         for (auto&& var : s->get_all<genny::Variable>()) {
-            m_nodes.emplace(offset + var->offset(), make_node(var));
+            if (var->is_bitfield()) {
+                bitfield_offsets.emplace(offset + var->offset());
+            } else {
+                m_nodes.emplace(offset + var->offset(), make_node(var));
+            }
         }
     };
 
     add_vars(0, m_struct);
+
+    // Fill in all the bitfields (padding becomes UndefinedBitfield nodes).
+    for (auto offset : bitfield_offsets) {
+        auto last_bit = 0;
+        genny::Type* bitfield_type = nullptr;
+
+        for (auto&& [bit_offset, var] : m_struct->bitfield(offset)) {
+            if (bit_offset - last_bit > 0) {
+                auto& props = m_props[fmt::format("pad_bitfield__{:x}_{:x}", offset, last_bit)];
+                m_nodes.emplace(offset, std::make_unique<UndefinedBitfield>(
+                                            m_cfg, m_process, props, var->size(), bit_offset - last_bit, last_bit));
+            }
+
+            m_nodes.emplace(offset, make_node(var));
+
+            last_bit = bit_offset + var->bit_size();
+            bitfield_type = var->type();
+        }
+
+        auto num_bits = bitfield_type->size() * CHAR_BIT;
+
+        if (last_bit != num_bits) {
+            auto bit_offset = num_bits;
+            auto& props = m_props[fmt::format("pad_bitfield__{:x}_{:x}", offset, last_bit)];
+            m_nodes.emplace(offset, std::make_unique<UndefinedBitfield>(m_cfg, m_process, props, bitfield_type->size(),
+                                        bit_offset - last_bit, last_bit));
+        }
+    }
 
     // Fill in the rest of the offsets with undefined nodes.
     if (!m_nodes.empty()) {
@@ -182,7 +217,7 @@ void Struct::fill_space(uintptr_t last_offset, int delta) {
         }
 
         auto& props = m_props[fmt::format("undefined_{:x}", offset)];
-        m_nodes.emplace(offset, std::make_unique<Undefined>(m_process, props, size));
+        m_nodes.emplace(offset, std::make_unique<Undefined>(m_cfg, m_process, props, size));
     };
 
     auto start = last_offset;

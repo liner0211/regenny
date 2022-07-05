@@ -13,8 +13,8 @@ static std::unique_ptr<Pointer> g_preview_node{};
 static Process* g_preview_node_process{};
 bool Undefined::is_hidden{};
 
-Undefined::Undefined(Process& process, Property& props, size_t size)
-    : Base{process, props}, m_size{size}, m_original_size{size} {
+Undefined::Undefined(Config& cfg, Process& process, Property& props, size_t size)
+    : Base{cfg, process, props}, m_size{size}, m_original_size{size} {
     m_props["__size"].set_default(0);
 
     // If our inherited size_override isn't 0 we apply the override now.
@@ -25,7 +25,7 @@ Undefined::Undefined(Process& process, Property& props, size_t size)
     if (g_preview_node == nullptr || g_preview_node_process != &process) {
         auto preview_struct = g_preview_ns.struct_("preview")->size(sizeof(uintptr_t) * 16);
         g_preview_ptr.type(preview_struct->ptr());
-        g_preview_node = std::make_unique<Pointer>(process, &g_preview_ptr, g_preview_props);
+        g_preview_node = std::make_unique<Pointer>(m_cfg, process, &g_preview_ptr, g_preview_props);
         g_preview_node->is_collapsed() = false;
         g_preview_node_process = &process;
     }
